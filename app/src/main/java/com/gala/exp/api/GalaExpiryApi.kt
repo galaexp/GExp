@@ -1,5 +1,6 @@
 package com.gala.exp.api
 
+import com.squareup.moshi.Json
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -24,14 +25,54 @@ data class LastWeekResponse(
 )
 
 data class ThisWeekRowDto(
-    val Article: String?,
+    @Json(name = "RowIndex")
+    val RowIndex: Int? = null,
+    @Json(name = "Article")
+    val Article: String? = null,
+    @Json(name = "Barcode")
     val Barcode: String? = null,
-    val Description: String?,
-    val Department: String?,
-    val Stock: String?,
-    val ExpiryDate: String?,
-    val RowIndex: Int?
-)
+    @Json(name = "Description")
+    val Description: String? = null,
+    @Json(name = "Department")
+    val Department: String? = null,
+    @Json(name = "Stock")
+    val Stock: String? = null,
+    @Json(name = "ExpiryDate")
+    val ExpiryDate: String? = null,
+    @Json(name = "DaysLeft")
+    val DaysLeft: Int? = null,
+    @Json(name = "StaffName")
+    val StaffName: String? = null,
+    @Json(name = "staffName")
+    val rawStaffName: String? = null,
+    @Json(name = "Staff")
+    val Staff: String? = null,
+    @Json(name = "staff")
+    val lowerStaff: String? = null,
+    @Json(name = "Staff_Name")
+    val staffNameSnake: String? = null,
+    @Json(name = "staff_name")
+    val staffNameLowerSnake: String? = null,
+    @Json(name = "Staff Name")
+    val staffNameSpace: String? = null,
+    @Json(name = "STAFF")
+    val staffUpper: String? = null,
+    @Json(name = "STAFF_NAME")
+    val staffNameUpperSnake: String? = null
+) {
+    val staffDisplayName: String
+        get() = listOfNotNull(
+            StaffName,
+            rawStaffName,
+            Staff,
+            lowerStaff,
+            staffNameSnake,
+            staffNameLowerSnake,
+            staffNameSpace,
+            staffUpper,
+            staffNameUpperSnake
+        ).firstOrNull { it.isNotBlank() && !it.equals("null", ignoreCase = true) }?.trim() ?: ""
+}
 
 data class ThisWeekResponse(
     val rows: List<ThisWeekRowDto>?
@@ -49,8 +90,37 @@ data class StoreDataRowDto(
     val DaysLeft: String? = null,
     val RowIndex: Int? = null,
     val SubMonth: String? = null,
-    val SubMonthDisp: String? = null
-)
+    val SubMonthDisp: String? = null,
+    val Staff: String? = null,
+    @Json(name = "staff")
+    val lowerStaff: String? = null,
+    val StaffName: String? = null,
+    @Json(name = "staffName")
+    val rawStaffName: String? = null,
+    @Json(name = "Staff_Name")
+    val staffNameSnake: String? = null,
+    @Json(name = "staff_name")
+    val staffNameLowerSnake: String? = null,
+    @Json(name = "Staff Name")
+    val staffNameSpace: String? = null,
+    @Json(name = "STAFF")
+    val staffUpper: String? = null,
+    @Json(name = "STAFF_NAME")
+    val staffNameUpperSnake: String? = null
+) {
+    val staffDisplayName: String
+        get() = listOfNotNull(
+            StaffName,
+            rawStaffName,
+            Staff,
+            lowerStaff,
+            staffNameSnake,
+            staffNameLowerSnake,
+            staffNameSpace,
+            staffUpper,
+            staffNameUpperSnake
+        ).firstOrNull { it.isNotBlank() && !it.equals("null", ignoreCase = true) }?.trim() ?: ""
+}
 
 data class StoreDataResponse(
     val rows: List<StoreDataRowDto>?
@@ -79,7 +149,8 @@ data class FollowUpRequest(
     val description: String,
     val department: String,
     val stock: String,
-    val expiry: String
+    val expiry: String,
+    val staffName: String = ""
 )
 
 data class AddExpiryRequest(
@@ -91,7 +162,13 @@ data class AddExpiryRequest(
     val description: String,
     val department: String,
     val stock: String,
-    val expiry: String
+    val expiry: String,
+    val staffName: String = ""
+)
+
+data class UpdateStaffsRequest(
+    val storeCode: String,
+    val staffs: String
 )
 
 interface GalaExpiryApi {
@@ -156,6 +233,12 @@ interface GalaExpiryApi {
     suspend fun addExpiry(
         @Query("action") action: String = "addExpiry",
         @Body request: AddExpiryRequest
+    ): Response<SuccessResponse>
+
+    @POST("/")
+    suspend fun updateStoreStaffs(
+        @Query("action") action: String = "updateStoreStaffs",
+        @Body request: UpdateStaffsRequest
     ): Response<SuccessResponse>
 
     @GET("/")

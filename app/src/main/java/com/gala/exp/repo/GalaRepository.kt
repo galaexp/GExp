@@ -16,7 +16,8 @@ import java.util.concurrent.TimeUnit
 data class StoreMatched(
     val storeCode: String,
     val storeName: String,
-    val passwordPass: String
+    val passwordPass: String,
+    val staffs: String = ""
 )
 
 class GalaRepository(context: Context) {
@@ -77,7 +78,8 @@ class GalaRepository(context: Context) {
             if (code == targetCode) {
                 val name = (item["storeName"] as? String ?: item["1"] as? String ?: "").trim()
                 val password = (item["password"] as? String ?: item["2"] as? String ?: "").trim()
-                return StoreMatched(code, name, password)
+                val staffs = (item["staffs"] as? String ?: item["3"] as? String ?: "").trim()
+                return StoreMatched(code, name, password, staffs)
             }
         }
         // Option B: If parsed as List/Array
@@ -86,7 +88,8 @@ class GalaRepository(context: Context) {
             if (code == targetCode) {
                 val name = (item.getOrNull(1) as? String ?: "").trim()
                 val password = (item.getOrNull(2) as? String ?: "").trim()
-                return StoreMatched(code, name, password)
+                val staffs = (item.getOrNull(3) as? String ?: "").trim()
+                return StoreMatched(code, name, password, staffs)
             }
         }
         return null
@@ -181,6 +184,15 @@ class GalaRepository(context: Context) {
             response.body() ?: SuccessResponse(true, "Add successful.")
         } else {
             throw Exception("Server failed to add near-expiry item: Code ${response.code()}")
+        }
+    }
+
+    suspend fun updateStoreStaffs(storeCode: String, staffs: String): SuccessResponse = withContext(Dispatchers.IO) {
+        val response = api.updateStoreStaffs(request = UpdateStaffsRequest(storeCode = storeCode, staffs = staffs))
+        if (response.isSuccessful) {
+            response.body() ?: SuccessResponse(true, "Staff list updated successfully.")
+        } else {
+            throw Exception("Server failed to update staff list: Code ${response.code()}")
         }
     }
 

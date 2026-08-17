@@ -94,10 +94,48 @@ val ColorBlueL = Color(0xFFEFF6FF) // Combined Blue light #eff6ff
 val ColorPurple = Color(0xFF7C3AED) // M3 Purple #7c3aed
 val ColorPurpleL = Color(0xFFF5F3FF) // Light purple #f5f3ff
 
+object AppSettings {
+    private const val PREFS_NAME = "gala_app_settings"
+    private const val KEY_TOAST_ENABLED = "toast_enabled"
+    private const val KEY_AUTO_CLEAR_INPUTS = "auto_clear_inputs"
+    private const val KEY_HAPTIC_FEEDBACK = "haptic_feedback"
+
+    fun areToastsEnabled(context: android.content.Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_TOAST_ENABLED, true)
+    }
+
+    fun setToastsEnabled(context: android.content.Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_TOAST_ENABLED, enabled).apply()
+    }
+
+    fun isAutoClearInputsEnabled(context: android.content.Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_AUTO_CLEAR_INPUTS, true)
+    }
+
+    fun setAutoClearInputsEnabled(context: android.content.Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_AUTO_CLEAR_INPUTS, enabled).apply()
+    }
+
+    fun isHapticFeedbackEnabled(context: android.content.Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        return prefs.getBoolean(KEY_HAPTIC_FEEDBACK, true)
+    }
+
+    fun setHapticFeedbackEnabled(context: android.content.Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences(PREFS_NAME, android.content.Context.MODE_PRIVATE)
+        prefs.edit().putBoolean(KEY_HAPTIC_FEEDBACK, enabled).apply()
+    }
+}
+
 private var activeToastRef: android.widget.Toast? = null
 
 fun showToast(context: android.content.Context, message: String, duration: Int = android.widget.Toast.LENGTH_SHORT) {
     if (message.isBlank()) return
+    if (!AppSettings.areToastsEnabled(context)) return
     try {
         activeToastRef?.cancel()
     } catch (_: Exception) {}
@@ -124,6 +162,9 @@ fun GalaAppScreen(viewModel: GalaViewModel) {
 
     val dashboardRows by viewModel.storeDashboardRows.collectAsState()
     val dashboardLoading by viewModel.storeDashboardLoading.collectAsState()
+
+    val staffList by viewModel.staffList.collectAsState()
+    val selectedStaff by viewModel.selectedStaff.collectAsState()
 
     val appUpdateState by viewModel.appUpdateState.collectAsState()
     val downloadStatus by viewModel.downloadStatus.collectAsState()
@@ -266,35 +307,21 @@ fun GalaAppScreen(viewModel: GalaViewModel) {
                         )
 
                         DrawerItem(
-                            icon = Icons.Default.AddCircle,
-                            label = "Add New Item",
-                            selected = activeView == "add_item",
-                            enabled = selectedWeek.isNotBlank(),
+                            icon = Icons.Default.People,
+                            label = "Manage Staff",
+                            selected = activeView == "manage_staff",
                             onClick = {
-                                activeView = "add_item"
+                                activeView = "manage_staff"
                                 scope.launch { drawerState.close() }
                             }
                         )
 
                         DrawerItem(
-                            icon = Icons.Default.Assignment,
-                            label = "Follow Up",
-                            selected = activeView == "follow_up",
-                            enabled = selectedWeek.isNotBlank(),
+                            icon = Icons.Default.Settings,
+                            label = "Settings",
+                            selected = activeView == "settings",
                             onClick = {
-                                viewModel.startFollowUp()
-                                activeView = "follow_up"
-                                scope.launch { drawerState.close() }
-                            }
-                        )
-
-                        DrawerItem(
-                            icon = Icons.Default.RateReview,
-                            label = "Review & Submit",
-                            selected = activeView == "review",
-                            enabled = selectedWeek.isNotBlank(),
-                            onClick = {
-                                activeView = "review"
+                                activeView = "settings"
                                 scope.launch { drawerState.close() }
                             }
                         )
@@ -340,6 +367,8 @@ fun GalaAppScreen(viewModel: GalaViewModel) {
                                         "add_item" -> "Add New Item"
                                         "follow_up" -> "Follow Up"
                                         "review" -> "Log Review"
+                                        "manage_staff" -> "Manage Staff"
+                                        "settings" -> "Settings"
                                         else -> "Gala Markets"
                                     },
                                     fontSize = 17.sp,
@@ -395,6 +424,9 @@ fun GalaAppScreen(viewModel: GalaViewModel) {
                             lockedWeeks = lockedWeeks,
                             dashboardRows = dashboardRows,
                             dashboardLoading = dashboardLoading,
+                            staffList = staffList,
+                            selectedStaff = selectedStaff,
+                            onStaffSelected = viewModel::setSelectedStaff,
                             onWeekSelected = viewModel::setSelectedWeek,
                             onFollowUpClick = {
                                 viewModel.startFollowUp()
@@ -436,6 +468,13 @@ fun GalaAppScreen(viewModel: GalaViewModel) {
                             viewModel = viewModel,
                             selectedWeek = selectedWeek,
                             isLocked = isLocked,
+                            onBackToHome = { activeView = "home" }
+                        )
+                        "manage_staff" -> ManageStaffScreen(
+                            viewModel = viewModel,
+                            onBackToHome = { activeView = "home" }
+                        )
+                        "settings" -> SettingsScreen(
                             onBackToHome = { activeView = "home" }
                         )
                     }
@@ -768,6 +807,9 @@ fun HomeScreen(
     lockedWeeks: Set<String>,
     dashboardRows: List<StoreDataRowDto>,
     dashboardLoading: Boolean,
+    staffList: List<String>,
+    selectedStaff: String,
+    onStaffSelected: (String) -> Unit,
     onWeekSelected: (String) -> Unit,
     onFollowUpClick: () -> Unit,
     onAddNewClick: () -> Unit,
@@ -775,6 +817,7 @@ fun HomeScreen(
     onStoreViewClick: () -> Unit,
     onShelfRemovalClick: () -> Unit
 ) {
+    val localContext = androidx.compose.ui.platform.LocalContext.current
     var expandedWeekDropdown by remember { mutableStateOf(false) }
     var weekHintVisible by remember { mutableStateOf(false) }
 
@@ -1084,6 +1127,103 @@ fun HomeScreen(
             }
         }
 
+        // Staff Selection Card (Single clean dropdown for active staff member)
+        item {
+            var staffDropdownExpanded by remember { mutableStateOf(false) }
+            val context = androidx.compose.ui.platform.LocalContext.current
+
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.5.dp, if (selectedStaff.isBlank()) ColorPrimary else ColorBorder),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { staffDropdownExpanded = true }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            color = ColorPrimary.copy(alpha = 0.12f),
+                            shape = CircleShape,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = "Staff",
+                                    tint = ColorPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                        Column {
+                            Text(
+                                text = "LOGGING PROCESS AS STAFF",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = ColorMuted,
+                                style = androidx.compose.ui.text.TextStyle(letterSpacing = 0.8.sp)
+                            )
+                            Text(
+                                text = if (selectedStaff.isNotBlank()) selectedStaff else "Select Staff Name *",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (selectedStaff.isNotBlank()) ColorInk else ColorPrimary
+                            )
+                        }
+                    }
+
+                    Box {
+                        Icon(
+                            imageVector = Icons.Default.ArrowDropDown,
+                            contentDescription = "Select Staff",
+                            tint = ColorPrimary,
+                            modifier = Modifier.size(28.dp)
+                        )
+
+                        DropdownMenu(
+                            expanded = staffDropdownExpanded,
+                            onDismissRequest = { staffDropdownExpanded = false },
+                            modifier = Modifier.background(Color.White)
+                        ) {
+                            if (staffList.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("No staff found (Add in Manage Staff)", fontSize = 13.sp, color = ColorMuted) },
+                                    onClick = { staffDropdownExpanded = false }
+                                )
+                            } else {
+                                staffList.forEach { staffName ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = staffName,
+                                                fontWeight = if (staffName == selectedStaff) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                                color = if (staffName == selectedStaff) ColorPrimary else Color.Black,
+                                                fontSize = 14.sp
+                                            )
+                                        },
+                                        onClick = {
+                                            onStaffSelected(staffName)
+                                            staffDropdownExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         item {
             Text(
                 text = "WHAT WOULD YOU LIKE TO DO?",
@@ -1101,10 +1241,17 @@ fun HomeScreen(
                 iconColorBg = ColorBlueL,
                 title = "Follow Up",
                 description = "View last week's items and update stock counts for this week",
-                enabled = selectedWeek.isNotBlank(),
+                enabled = selectedWeek.isNotBlank() && selectedStaff.isNotBlank(),
                 colorFocus = ColorBlueCombined,
                 onClick = onFollowUpClick,
-                onLockedClick = { weekHintVisible = true }
+                onLockedClick = {
+                    if (selectedWeek.isBlank()) {
+                        weekHintVisible = true
+                        showToast(localContext, "Please select a week first")
+                    } else if (selectedStaff.isBlank()) {
+                        showToast(localContext, "Please select a staff member first")
+                    }
+                }
             )
         }
 
@@ -1114,10 +1261,17 @@ fun HomeScreen(
                 iconColorBg = ColorPrimaryL,
                 title = "Add New Item",
                 description = "Log a new near-expiry item for this week",
-                enabled = selectedWeek.isNotBlank(),
+                enabled = selectedWeek.isNotBlank() && selectedStaff.isNotBlank(),
                 colorFocus = ColorPrimary,
                 onClick = onAddNewClick,
-                onLockedClick = { weekHintVisible = true }
+                onLockedClick = {
+                    if (selectedWeek.isBlank()) {
+                        weekHintVisible = true
+                        showToast(localContext, "Please select a week first")
+                    } else if (selectedStaff.isBlank()) {
+                        showToast(localContext, "Please select a staff member first")
+                    }
+                }
             )
         }
 
@@ -1673,14 +1827,56 @@ fun AddItemScreen(
 
             // ACTIONS
             item {
+                val selectedStaff by viewModel.selectedStaff.collectAsState()
+                val isStaffSelected = selectedStaff.isNotBlank()
+
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isStaffSelected) Color(0xFFF0FDF4) else Color(0xFFFEF2F2)
+                        ),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isStaffSelected) Color(0xFFBBF7D0) else Color(0xFFFCA5A5)
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = if (isStaffSelected) Color(0xFF16A34A) else Color(0xFFDC2626),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Submitting process as staff: ",
+                                fontSize = 12.sp,
+                                color = ColorInk
+                            )
+                            Text(
+                                text = if (isStaffSelected) selectedStaff else "Not Selected (Required)",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isStaffSelected) Color(0xFF15803D) else Color(0xFFB91C1C)
+                            )
+                        }
+                    }
+
                     Button(
+                        enabled = !isLocked && isStaffSelected && articleCode.isNotBlank() && stock.isNotBlank() && expiry.isNotBlank() && !isSubmitting,
                         onClick = {
                             if (isLocked) {
                                 showToast(
                                     context,
                                     "Submission Completed For This Week, If any Updation Needed-Contact Buyer Directly"
                                 )
+                            } else if (!isStaffSelected) {
+                                showToast(context, "Please select a staff member on Home screen first")
                             } else {
                                 val alreadySubmittedRow = reviewRows.firstOrNull { thisWeek ->
                                     isSameItemExpiry(
@@ -1718,8 +1914,7 @@ fun AddItemScreen(
                             containerColor = if (isLocked) Color(0xFFCBD5E1) else ColorPrimary,
                             contentColor = if (isLocked) Color(0xFF64748B) else Color.White
                         ),
-                        shape = RoundedCornerShape(12.dp),
-                        enabled = isLocked || (selectedWeek.isNotBlank() && description.isNotBlank() && stock.isNotBlank() && expiry.isNotBlank() && !isSubmitting)
+                        shape = RoundedCornerShape(12.dp)
                     ) {
                         if (isSubmitting) {
                             CircularProgressIndicator(color = Color.White, modifier = Modifier.size(22.dp))
@@ -2197,13 +2392,46 @@ fun FollowUpScreen(
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
 
-            Text(
-                text = "Completed $completedCount/$totalCount",
-                fontSize = 12.5.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (totalCount > 0 && completedCount == totalCount) Color(0xFF15803D) else ColorPrimary,
-                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
-            )
+            val selectedStaff by viewModel.selectedStaff.collectAsState()
+            val isStaffSelected = selectedStaff.isNotBlank()
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Completed $completedCount/$totalCount",
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (totalCount > 0 && completedCount == totalCount) Color(0xFF15803D) else ColorPrimary
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = if (isStaffSelected) Color(0xFF16A34A) else Color(0xFFDC2626),
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Text(
+                        text = "Updating as staff: ",
+                        fontSize = 11.sp,
+                        color = ColorMuted
+                    )
+                    Text(
+                        text = if (isStaffSelected) selectedStaff else "Not Selected",
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isStaffSelected) Color(0xFF15803D) else Color(0xFFB91C1C)
+                    )
+                }
+            }
 
             UniversalSearchBar(
                 query = searchQuery,
@@ -2306,6 +2534,8 @@ fun FollowUpScreen(
                                                 context,
                                                 "Submission Completed For This Week, If any Updation Needed-Contact Buyer Directly"
                                             )
+                                        } else if (!isStaffSelected) {
+                                            showToast(context, "Staff selection is required! Please select a staff member on Home screen.")
                                         } else {
                                             selectedStockRow = row
                                             updatedStockValue = matchingReviewRow?.Stock ?: ""
@@ -2395,7 +2625,7 @@ fun FollowUpScreen(
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "Dept: ${row.Department ?: "—"}",
+                                            text = row.Department ?: "—",
                                             color = ColorMuted,
                                             fontSize = 11.sp
                                         )
@@ -2715,17 +2945,32 @@ fun ReviewScreen(
     var itemToDeleteArrayIndex by remember { mutableStateOf(-1) }
     var itemToDeleteDescription by remember { mutableStateOf("") }
     var searchQuery by remember { mutableStateOf("") }
+    var staffFilter by remember { mutableStateOf("") }
+    var sortByStaff by remember { mutableStateOf(false) }
+    val staffList by viewModel.staffList.collectAsState()
 
-    val filteredReviewRows = remember(reviewRows, searchQuery) {
-        if (searchQuery.isBlank()) {
-            reviewRows
+    val filteredReviewRows = remember(reviewRows, searchQuery, staffFilter, sortByStaff) {
+        val filtered = reviewRows.filter { row ->
+            val matchSearch = searchQuery.isBlank() || (
+                (row.Barcode?.lowercase()?.contains(searchQuery.trim().lowercase()) == true) ||
+                (row.Description?.lowercase()?.contains(searchQuery.trim().lowercase()) == true) ||
+                (row.Article?.lowercase()?.contains(searchQuery.trim().lowercase()) == true) ||
+                (row.staffDisplayName.lowercase().contains(searchQuery.trim().lowercase()))
+            )
+            val matchStaff = staffFilter.isBlank() || row.staffDisplayName.equals(staffFilter, ignoreCase = true)
+            matchSearch && matchStaff
+        }
+        if (sortByStaff) {
+            filtered.sortedWith(
+                compareBy<ThisWeekRowDto, String>(String.CASE_INSENSITIVE_ORDER) { row ->
+                    val name = row.staffDisplayName.trim()
+                    if (name.isBlank()) "zzz_no_staff" else name
+                }.thenBy(String.CASE_INSENSITIVE_ORDER) { row ->
+                    row.Description?.trim() ?: ""
+                }
+            )
         } else {
-            val q = searchQuery.trim().lowercase()
-            reviewRows.filter { row ->
-                (row.Barcode?.lowercase()?.contains(q) == true) ||
-                (row.Description?.lowercase()?.contains(q) == true) ||
-                (row.Article?.lowercase()?.contains(q) == true)
-            }
+            filtered
         }
     }
 
@@ -2799,12 +3044,133 @@ fun ReviewScreen(
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        UniversalSearchBar(
-            query = searchQuery,
-            onQueryChange = { searchQuery = it },
-            placeholder = "Search barcode, description, article...",
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.weight(1f)) {
+                UniversalSearchBar(
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    placeholder = "Search barcode, description...",
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            var staffDropdownExpanded by remember { mutableStateOf(false) }
+            val isStaffActive = staffFilter.isNotBlank() || sortByStaff
+            val buttonLabel = when {
+                staffFilter.isNotBlank() -> "Staff: $staffFilter"
+                sortByStaff -> "Sorted: Staff"
+                else -> "Staff"
+            }
+
+            Box {
+                OutlinedButton(
+                    onClick = { staffDropdownExpanded = true },
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, if (isStaffActive) ColorPrimary else ColorBorder),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = if (isStaffActive) ColorPrimary.copy(alpha = 0.08f) else Color.White
+                    ),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Icon(
+                        imageVector = if (sortByStaff) Icons.Default.Sort else Icons.Default.Person,
+                        contentDescription = "Staff Filter & Sort",
+                        tint = if (isStaffActive) ColorPrimary else ColorMuted,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = buttonLabel,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isStaffActive) ColorPrimary else ColorInk
+                    )
+                    Icon(
+                        imageVector = Icons.Default.ArrowDropDown,
+                        contentDescription = null,
+                        tint = if (isStaffActive) ColorPrimary else ColorMuted,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = staffDropdownExpanded,
+                    onDismissRequest = { staffDropdownExpanded = false },
+                    modifier = Modifier.background(Color.White)
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "All Staff (Default)",
+                                fontWeight = if (staffFilter.isBlank() && !sortByStaff) FontWeight.ExtraBold else FontWeight.Medium,
+                                color = if (staffFilter.isBlank() && !sortByStaff) ColorPrimary else Color.Black,
+                                fontSize = 14.sp
+                            )
+                        },
+                        onClick = {
+                            staffFilter = ""
+                            sortByStaff = false
+                            staffDropdownExpanded = false
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Sort,
+                                    contentDescription = null,
+                                    tint = if (sortByStaff) ColorPrimary else ColorMuted,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Sort All by Staff Name",
+                                    fontWeight = if (sortByStaff) FontWeight.ExtraBold else FontWeight.Medium,
+                                    color = if (sortByStaff) ColorPrimary else Color.Black,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        },
+                        onClick = {
+                            staffFilter = ""
+                            sortByStaff = true
+                            staffDropdownExpanded = false
+                        }
+                    )
+
+                    Divider(modifier = Modifier.padding(vertical = 4.dp), color = ColorBorder)
+
+                    val availableStaffs = remember(reviewRows, staffList) {
+                        (staffList + reviewRows.map { it.staffDisplayName }.filter { it.isNotBlank() })
+                            .distinctBy { it.trim().lowercase() }
+                            .sortedWith(String.CASE_INSENSITIVE_ORDER)
+                    }
+                    availableStaffs.forEach { name ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = name,
+                                    fontWeight = if (staffFilter == name) FontWeight.ExtraBold else FontWeight.Medium,
+                                    color = if (staffFilter == name) ColorPrimary else Color.Black,
+                                    fontSize = 14.sp
+                                )
+                            },
+                            onClick = {
+                                staffFilter = name
+                                sortByStaff = false
+                                staffDropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+        }
 
         // Scrollable Table view of recent additions
         Box(
@@ -2917,11 +3283,40 @@ fun ReviewScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = "Dept: ${row.Department ?: "—"}",
-                                        color = ColorMuted,
-                                        fontSize = 11.sp
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = row.Department ?: "—",
+                                            color = ColorMuted,
+                                            fontSize = 11.sp
+                                        )
+                                        if (row.staffDisplayName.isNotBlank()) {
+                                            Text(
+                                                text = "•",
+                                                color = ColorMuted,
+                                                fontSize = 11.sp
+                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Person,
+                                                    contentDescription = null,
+                                                    tint = ColorPrimary,
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                                Text(
+                                                    text = row.staffDisplayName,
+                                                    color = ColorPrimary,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    fontSize = 11.sp
+                                                )
+                                            }
+                                        }
+                                    }
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -3702,11 +4097,15 @@ fun StoreViewScreen(
     var dashMonthFilter by remember { mutableStateOf("") }
     var dashWeekFilter by remember { mutableStateOf("") }
     var dashDeptFilter by remember { mutableStateOf("") }
+    var dashStaffFilter by remember { mutableStateOf("") }
     var dashDrillFilter by remember { mutableStateOf("") }
 
     var monthExpanded by remember { mutableStateOf(false) }
     var weekExpanded by remember { mutableStateOf(false) }
     var deptExpanded by remember { mutableStateOf(false) }
+    var staffExpanded by remember { mutableStateOf(false) }
+
+    val staffList by viewModel.staffList.collectAsState()
 
     LaunchedEffect(Unit) {
         viewModel.loadStoreDashboardData()
@@ -3763,12 +4162,17 @@ fun StoreViewScreen(
         }
 
         // Apply base filters
-        val filteredRows = remember(dashboardRows, dashMonthFilter, dashWeekFilter, dashDeptFilter) {
+        val availableStaffsInStore = remember(dashboardRows, staffList) {
+            (staffList + dashboardRows.map { it.staffDisplayName }.filter { it.isNotBlank() }).distinct().sorted()
+        }
+
+        val filteredRows = remember(dashboardRows, dashMonthFilter, dashWeekFilter, dashDeptFilter, dashStaffFilter) {
             dashboardRows.filter { row ->
                 val matchMonth = dashMonthFilter.isBlank() || row.SubMonth == dashMonthFilter
                 val matchWeek = dashWeekFilter.isBlank() || row.Week == dashWeekFilter
                 val matchDept = dashDeptFilter.isBlank() || row.Department == dashDeptFilter
-                matchMonth && matchWeek && matchDept
+                val matchStaff = dashStaffFilter.isBlank() || row.staffDisplayName.equals(dashStaffFilter, ignoreCase = true)
+                matchMonth && matchWeek && matchDept && matchStaff
             }
         }
 
@@ -3927,7 +4331,7 @@ fun StoreViewScreen(
                                 style = androidx.compose.ui.text.TextStyle(letterSpacing = 1.sp)
                             )
 
-                            if (dashMonthFilter.isNotBlank() || dashWeekFilter.isNotBlank() || dashDeptFilter.isNotBlank() || dashDrillFilter.isNotBlank()) {
+                            if (dashMonthFilter.isNotBlank() || dashWeekFilter.isNotBlank() || dashDeptFilter.isNotBlank() || dashStaffFilter.isNotBlank() || dashDrillFilter.isNotBlank()) {
                                 Text(
                                     text = "Reset All Filters",
                                     fontSize = 11.sp,
@@ -3937,6 +4341,7 @@ fun StoreViewScreen(
                                         dashMonthFilter = ""
                                         dashWeekFilter = ""
                                         dashDeptFilter = ""
+                                        dashStaffFilter = ""
                                         dashDrillFilter = ""
                                     }
                                 )
@@ -3946,8 +4351,8 @@ fun StoreViewScreen(
                         Spacer(modifier = Modifier.height(12.dp))
 
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             // Month Filter
                             FilterDropdown(
@@ -3980,6 +4385,16 @@ fun StoreViewScreen(
                                 onSelect = { dashDeptFilter = it },
                                 expanded = deptExpanded,
                                 onExpandedChange = { deptExpanded = it }
+                            )
+
+                            // Staff Filter
+                            FilterDropdown(
+                                label = "Staff",
+                                selectedValue = dashStaffFilter,
+                                options = availableStaffsInStore,
+                                onSelect = { dashStaffFilter = it },
+                                expanded = staffExpanded,
+                                onExpandedChange = { staffExpanded = it }
                             )
                         }
                     }
@@ -4263,7 +4678,8 @@ fun StoreViewScreen(
                     rows = drilledRows,
                     dashMonthFilter = dashMonthFilter,
                     dashWeekFilter = dashWeekFilter,
-                    dashDeptFilter = dashDeptFilter
+                    dashDeptFilter = dashDeptFilter,
+                    dashStaffFilter = dashStaffFilter
                 )
             }
         }
@@ -4548,7 +4964,8 @@ fun StoreViewTable(
     rows: List<StoreDataRowDto>,
     dashMonthFilter: String,
     dashWeekFilter: String,
-    dashDeptFilter: String
+    dashDeptFilter: String,
+    dashStaffFilter: String = ""
 ) {
     val scrollState = rememberScrollState()
     var displayLimit by remember(rows) { mutableStateOf(50) }
@@ -4556,12 +4973,14 @@ fun StoreViewTable(
     val showWeek = dashWeekFilter.isBlank()
     val showMonth = dashMonthFilter.isBlank()
     val showDept = dashDeptFilter.isBlank()
+    val showStaff = dashStaffFilter.isBlank()
 
     val weekWidth = 55
     val monthWidth = 70
     val articleWidth = 70
     val descriptionWidth = 130
     val deptWidth = 80
+    val staffWidth = 80
     val stockWidth = 50
     val expiryWidth = 80
     val daysLeftWidth = 70
@@ -4571,7 +4990,8 @@ fun StoreViewTable(
     val totalWidth = articleWidth + descriptionWidth + stockWidth + expiryWidth + daysLeftWidth + riskWidth +
             (if (showWeek) weekWidth else 0) +
             (if (showMonth) monthWidth else 0) +
-            (if (showDept) deptWidth else 0)
+            (if (showDept) deptWidth else 0) +
+            (if (showStaff) staffWidth else 0)
 
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -4598,6 +5018,7 @@ fun StoreViewTable(
                         TableHeaderCell("Article", articleWidth)
                         TableHeaderCell("Description", descriptionWidth)
                         if (showDept) TableHeaderCell("Dept", deptWidth)
+                        if (showStaff) TableHeaderCell("Staff", staffWidth)
                         TableHeaderCell("Stock", stockWidth)
                         TableHeaderCell("Expiry", expiryWidth)
                         TableHeaderCell("Days Left", daysLeftWidth)
@@ -4653,6 +5074,9 @@ fun StoreViewTable(
                                 TableCell(row.Description ?: "—", descriptionWidth)
                                 if (showDept) {
                                     TableCell(row.Department ?: "—", deptWidth)
+                                }
+                                if (showStaff) {
+                                    TableCell(row.staffDisplayName.ifBlank { "—" }, staffWidth)
                                 }
                                 TableCell(row.Stock ?: "—", stockWidth, isMono = true)
                                 TableCell(row.ExpiryDate ?: "—", expiryWidth, isMono = true)
@@ -5464,5 +5888,480 @@ fun installApk(context: android.content.Context, apkFile: java.io.File) {
     } catch (e: Exception) {
         e.printStackTrace()
         showToast(context, "Could not launch installer: ${e.localizedMessage}")
+    }
+}
+
+/* ══ MANAGE STAFF SCREEN ══ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ManageStaffScreen(
+    viewModel: GalaViewModel,
+    onBackToHome: () -> Unit
+) {
+    val staffList by viewModel.staffList.collectAsState()
+    val isStaffLoading by viewModel.isStaffLoading.collectAsState()
+    val staffError by viewModel.staffError.collectAsState()
+    val storeCode by viewModel.storeCode.collectAsState()
+    val storeName by viewModel.storeName.collectAsState()
+
+    var newStaffName by remember { mutableStateOf("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Top Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                onClick = onBackToHome,
+                modifier = Modifier
+                    .background(Color.White, RoundedCornerShape(8.dp))
+                    .border(1.dp, ColorBorder, RoundedCornerShape(8.dp))
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back to Home",
+                    tint = ColorPrimary
+                )
+            }
+
+            Text(
+                text = "Manage Store Staff",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = ColorPrimary
+            )
+
+            Spacer(modifier = Modifier.width(48.dp))
+        }
+
+        // Store info banner
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, ColorBorder),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    color = ColorPrimary.copy(alpha = 0.1f),
+                    shape = CircleShape,
+                    modifier = Modifier.size(40.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.People,
+                            contentDescription = null,
+                            tint = ColorPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+                Column {
+                    Text(
+                        text = storeName.ifBlank { "Store $storeCode" },
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = ColorInk
+                    )
+                    Text(
+                        text = "Store Code: $storeCode",
+                        fontSize = 12.sp,
+                        color = ColorMuted
+                    )
+                }
+            }
+        }
+
+        // Add Staff Input Card
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, ColorBorder),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "ADD NEW STAFF MEMBER",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = ColorMuted,
+                    style = androidx.compose.ui.text.TextStyle(letterSpacing = 1.sp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = newStaffName,
+                        onValueChange = { newStaffName = it },
+                        placeholder = { Text("Enter staff name (e.g. John)", fontSize = 13.sp, color = ColorMuted) },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(10.dp),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = ColorInk,
+                            unfocusedTextColor = ColorInk,
+                            focusedBorderColor = ColorPrimary,
+                            unfocusedBorderColor = ColorBorder,
+                            focusedContainerColor = Color.White,
+                            unfocusedContainerColor = Color.White,
+                            focusedPlaceholderColor = ColorMuted,
+                            unfocusedPlaceholderColor = ColorMuted
+                        )
+                    )
+
+                    Button(
+                        onClick = {
+                            if (newStaffName.isNotBlank()) {
+                                val nameToAdd = newStaffName.trim()
+                                viewModel.addStaffMember(
+                                    name = nameToAdd,
+                                    onSuccess = {
+                                        newStaffName = ""
+                                        showToast(context, "Added staff '$nameToAdd'")
+                                    },
+                                    onError = { err ->
+                                        showToast(context, err)
+                                    }
+                                )
+                            }
+                        },
+                        enabled = newStaffName.isNotBlank() && !isStaffLoading,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ColorPrimary,
+                            contentColor = Color.White,
+                            disabledContainerColor = ColorPrimary.copy(alpha = 0.4f),
+                            disabledContentColor = Color.White.copy(alpha = 0.7f)
+                        ),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isStaffLoading) {
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp))
+                        } else {
+                            Text("Add", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+
+                if (staffError != null) {
+                    Text(
+                        text = staffError ?: "",
+                        color = Color(0xFFDC2626),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
+
+        // Staff List Title
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "STAFF MEMBERS (${staffList.size})",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = ColorMuted,
+                style = androidx.compose.ui.text.TextStyle(letterSpacing = 1.sp)
+            )
+        }
+
+        // Staff List
+        if (staffList.isEmpty()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, ColorBorder),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(
+                    modifier = Modifier.padding(32.dp).fillMaxWidth(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No staff members added yet.\nAdd names above to track who logs items.",
+                        color = ColorMuted,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        } else {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth().weight(1f)
+            ) {
+                items(staffList) { staff ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        border = BorderStroke(1.dp, ColorBorder),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Surface(
+                                    color = ColorPrimary.copy(alpha = 0.08f),
+                                    shape = CircleShape,
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            text = staff.take(1).uppercase(),
+                                            fontWeight = FontWeight.Bold,
+                                            color = ColorPrimary,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+                                }
+                                Text(
+                                    text = staff,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = ColorInk
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    viewModel.removeStaffMember(
+                                        name = staff,
+                                        onSuccess = {
+                                            showToast(context, "Removed staff '$staff'")
+                                        },
+                                        onError = { err ->
+                                            showToast(context, err)
+                                        }
+                                    )
+                                },
+                                enabled = !isStaffLoading
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Delete Staff",
+                                    tint = Color(0xFFDC2626),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ══ SETTINGS SCREEN ══ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsScreen(
+    onBackToHome: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var toastEnabled by remember { mutableStateOf(AppSettings.areToastsEnabled(context)) }
+    var autoClearEnabled by remember { mutableStateOf(AppSettings.isAutoClearInputsEnabled(context)) }
+    var hapticEnabled by remember { mutableStateOf(AppSettings.isHapticFeedbackEnabled(context)) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Title Row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            IconButton(onClick = onBackToHome) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back to Home",
+                    tint = ColorInk
+                )
+            }
+            Text(
+                text = "Application Settings",
+                fontSize = 20.sp,
+                fontWeight = FontWeight.ExtraBold,
+                color = ColorInk
+            )
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Card 1: Notification & Feedback
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, ColorBorder),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "NOTIFICATION & ALERTS",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = ColorMuted,
+                    style = androidx.compose.ui.text.TextStyle(letterSpacing = 0.8.sp)
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Toggle 1: Toast Messages (Primary requirement)
+                SettingToggleRow(
+                    icon = Icons.Default.Notifications,
+                    title = "Toast Messages",
+                    description = "Enable or disable pop-up toast alerts across all screens",
+                    checked = toastEnabled,
+                    onCheckedChange = {
+                        toastEnabled = it
+                        AppSettings.setToastsEnabled(context, it)
+                    }
+                )
+
+                Divider(modifier = Modifier.padding(vertical = 12.dp), color = ColorBorder)
+
+                // Toggle 2: Haptic Feedback
+                SettingToggleRow(
+                    icon = Icons.Default.Tune,
+                    title = "Haptic Vibration",
+                    description = "Vibrate device upon completing barcode scans & actions",
+                    checked = hapticEnabled,
+                    onCheckedChange = {
+                        hapticEnabled = it
+                        AppSettings.setHapticFeedbackEnabled(context, it)
+                    }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Card 2: App Workflow Preferences
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, ColorBorder),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "ENTRY & LOGGING PREFERENCES",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = ColorMuted,
+                    style = androidx.compose.ui.text.TextStyle(letterSpacing = 0.8.sp)
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Toggle 3: Auto-Clear Form Inputs
+                SettingToggleRow(
+                    icon = Icons.Default.AutoFixHigh,
+                    title = "Auto-Clear Input Fields",
+                    description = "Automatically reset article code & quantity after adding item",
+                    checked = autoClearEnabled,
+                    onCheckedChange = {
+                        autoClearEnabled = it
+                        AppSettings.setAutoClearInputsEnabled(context, it)
+                    }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+@Composable
+fun SettingToggleRow(
+    icon: ImageVector,
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(
+            modifier = Modifier.weight(1f).padding(end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Surface(
+                color = ColorPrimary.copy(alpha = 0.1f),
+                shape = CircleShape,
+                modifier = Modifier.size(38.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = ColorPrimary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+            Column {
+                Text(
+                    text = title,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = ColorInk
+                )
+                Text(
+                    text = description,
+                    fontSize = 12.sp,
+                    color = ColorMuted,
+                    lineHeight = 15.sp
+                )
+            }
+        }
+
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = ColorPrimary,
+                uncheckedThumbColor = ColorMuted,
+                uncheckedTrackColor = ColorBorder
+            )
+        )
     }
 }

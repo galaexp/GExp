@@ -50,6 +50,19 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
     private val _authError = MutableStateFlow<String?>(null)
     val authError: StateFlow<String?> = _authError.asStateFlow()
 
+    // Staff Management state
+    private val _staffList = MutableStateFlow<List<String>>(emptyList())
+    val staffList: StateFlow<List<String>> = _staffList.asStateFlow()
+
+    private val _selectedStaff = MutableStateFlow<String>("")
+    val selectedStaff: StateFlow<String> = _selectedStaff.asStateFlow()
+
+    private val _isStaffLoading = MutableStateFlow(false)
+    val isStaffLoading: StateFlow<Boolean> = _isStaffLoading.asStateFlow()
+
+    private val _staffError = MutableStateFlow<String?>(null)
+    val staffError: StateFlow<String?> = _staffError.asStateFlow()
+
     // Operational session state
     private val _selectedWeek = MutableStateFlow("")
     val selectedWeek: StateFlow<String> = _selectedWeek.asStateFlow()
@@ -82,6 +95,7 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isSubmitting = MutableStateFlow(false)
     val isSubmitting: StateFlow<Boolean> = _isSubmitting.asStateFlow()
+    private var isCurrentlySubmitting = false
 
     // Barcode Match Event Flow
     private val _barcodeMatchEvent = MutableSharedFlow<Unit>(replay = 0, extraBufferCapacity = 64)
@@ -178,6 +192,13 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
         _rememberMe.value = savedRemember
 
         // Auto-login if rememberMe is enabled and saved credentials exist
+        if (savedCode.isNotBlank()) {
+            val cachedStaffsStr = prefs.getString("staffs_$savedCode", "") ?: ""
+            val parsedStaffs = cachedStaffsStr.split(",").map { it.trim() }.filter { it.isNotBlank() }
+            _staffList.value = parsedStaffs
+            _selectedStaff.value = ""
+        }
+
         if (savedRemember && savedCode.isNotBlank() && savedPass.isNotBlank()) {
             if (wasLoggedIn || savedName.isNotBlank()) {
                 if (savedName.isNotBlank()) {
@@ -258,6 +279,11 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
                 val store = repository.authenticateStore(_storeCode.value, _password.value)
                 _storeName.value = store.storeName
                 _isLoggedIn.value = true
+
+                val parsedStaffs = store.staffs.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                _staffList.value = parsedStaffs
+                _selectedStaff.value = ""
+                prefs.edit().putString("staffs_${store.storeCode}", store.staffs).apply()
 
                 // Save preferences when remember me is enabled
                 if (_rememberMe.value) {
@@ -355,14 +381,94 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
         _isSubmitting.value = false
     }
 
+    fun setSelectedStaff(name: String) {
+        _selectedStaff.value = name
+    }
+
+    fun addStaffMember(name: String, onSuccess: () -> Unit = {}, onError: (String) -> Unit = {}) {
+        val cleanName = name.trim()
+        if (cleanName.isBlank()) return
+        val current = _staffList.value.toMutableList()
+        if (current.any { it.equals(cleanName, ignoreCase = true) }) {
+            val err = "Staff '$cleanName' already exists."
+            _staffError.value = err
+            onError(err)
+            return
+        }
+        current.add(cleanName)
+        val newStaffsStr = current.joinToString(",")
+
+        viewModelScope.launch {
+            _isStaffLoading.value = true
+            _staffError.value = null
+            try {
+                val resp = repository.updateStoreStaffs(_storeCode.value, newStaffsStr)
+                if (resp.success == true) {
+                    _staffList.value = current
+                    if (_selectedStaff.value.isBlank()) {
+                        setSelectedStaff(cleanName)
+                    }
+                    prefs.edit().putString("staffs_${_storeCode.value}", newStaffsStr).apply()
+                    onSuccess()
+                } else {
+                    val err = resp.message ?: "Failed to update staff list."
+                    _staffError.value = err
+                    onError(err)
+                }
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Failed to update staff list."
+                _staffError.value = err
+                onError(err)
+            } finally {
+                _isStaffLoading.value = false
+            }
+        }
+    }
+
+    fun removeStaffMember(name: String, onSuccess: () -> Unit = {}, onError: (String) -> Unit = {}) {
+        val current = _staffList.value.toMutableList()
+        current.removeAll { it.equals(name, ignoreCase = true) }
+        val newStaffsStr = current.joinToString(",")
+
+        viewModelScope.launch {
+            _isStaffLoading.value = true
+            _staffError.value = null
+            try {
+                val resp = repository.updateStoreStaffs(_storeCode.value, newStaffsStr)
+                if (resp.success == true) {
+                    _staffList.value = current
+                    if (_selectedStaff.value.equals(name, ignoreCase = true)) {
+                        setSelectedStaff(current.firstOrNull() ?: "")
+                    }
+                    prefs.edit().putString("staffs_${_storeCode.value}", newStaffsStr).apply()
+                    onSuccess()
+                } else {
+                    val err = resp.message ?: "Failed to remove staff member."
+                    _staffError.value = err
+                    onError(err)
+                }
+            } catch (e: Exception) {
+                val err = e.localizedMessage ?: "Failed to remove staff member."
+                _staffError.value = err
+                onError(err)
+            } finally {
+                _isStaffLoading.value = false
+            }
+        }
+    }
+
     // Add near-expiry item
     fun submitExpiryItem(onSuccess: () -> Unit) {
-        if (_selectedWeek.value.isBlank() || _description.value.isBlank() || _stock.value.isBlank() || _expiry.value.isBlank()) {
+        if (isCurrentlySubmitting) {
+            return
+        }
+        if (_selectedWeek.value.isBlank() || _description.value.isBlank() || _stock.value.isBlank() || _expiry.value.isBlank() || _selectedStaff.value.isBlank()) {
             return
         }
 
+        isCurrentlySubmitting = true
+        _isSubmitting.value = true
         viewModelScope.launch {
-            _isSubmitting.value = true
             try {
                 val req = AddExpiryRequest(
                     storeCode = _storeCode.value,
@@ -373,16 +479,43 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
                     description = _description.value,
                     department = _department.value,
                     stock = _stock.value,
-                    expiry = _expiry.value
+                    expiry = _expiry.value,
+                    staffName = _selectedStaff.value
                 )
                 repository.submitItemExpiry(req)
                 // Trigger real-time post notification alert
                 notificationHelper.showItemSubmittedNotification(_articleCode.value, _description.value, _stock.value)
+                
+                // Immediately update local reviewRows state flow in memory to prevent duplicates and keep tracking synchronized without calling network API
+                val newLocalRow = ThisWeekRowDto(
+                    RowIndex = -1,
+                    Article = _articleCode.value,
+                    Barcode = _barcode.value,
+                    Description = _description.value,
+                    Department = _department.value,
+                    Stock = _stock.value,
+                    ExpiryDate = _expiry.value,
+                    StaffName = _selectedStaff.value,
+                    rawStaffName = _selectedStaff.value
+                )
+                val updatedList = _reviewRows.value.toMutableList()
+                val existingIndex = updatedList.indexOfFirst {
+                    it.Article?.trim()?.lowercase() == newLocalRow.Article?.trim()?.lowercase() &&
+                    it.ExpiryDate?.trim()?.lowercase() == newLocalRow.ExpiryDate?.trim()?.lowercase()
+                }
+                if (existingIndex >= 0) {
+                    updatedList[existingIndex] = newLocalRow
+                } else {
+                    updatedList.add(0, newLocalRow)
+                }
+                _reviewRows.value = updatedList
+                
                 clearInputs()
                 onSuccess()
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
+                isCurrentlySubmitting = false
                 _isSubmitting.value = false
             }
         }
@@ -443,8 +576,17 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
     val lastWeekLabel: StateFlow<String> = _lastWeekLabel.asStateFlow()
 
     fun submitFollowUpStock(stockRow: LastWeekRowDto, newStock: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        if (isCurrentlySubmitting) {
+            return
+        }
         if (newStock.isBlank()) return
+        if (_selectedStaff.value.isBlank()) {
+            onError("Staff member selection is required. Please select a staff member on the Homepage first.")
+            return
+        }
 
+        isCurrentlySubmitting = true
+        _isSubmitting.value = true
         viewModelScope.launch {
             try {
                 val req = FollowUpRequest(
@@ -456,16 +598,43 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
                     description = stockRow.Description ?: "",
                     department = stockRow.Department ?: "",
                     stock = newStock,
-                    expiry = stockRow.ExpiryDate ?: ""
+                    expiry = stockRow.ExpiryDate ?: "",
+                    staffName = _selectedStaff.value
                 )
                 val resp = repository.submitFollowUp(req)
                 if (resp.success == true) {
+                    // Immediately update local reviewRows in memory to prevent duplicates and keep tracking synchronized without calling network API
+                    val newLocalRow = ThisWeekRowDto(
+                        RowIndex = -1,
+                        Article = stockRow.Article,
+                        Barcode = stockRow.Barcode,
+                        Description = stockRow.Description,
+                        Department = stockRow.Department,
+                        Stock = newStock,
+                        ExpiryDate = stockRow.ExpiryDate,
+                        StaffName = _selectedStaff.value,
+                        rawStaffName = _selectedStaff.value
+                    )
+                    val updatedList = _reviewRows.value.toMutableList()
+                    val existingIndex = updatedList.indexOfFirst {
+                        it.Article?.trim()?.lowercase() == newLocalRow.Article?.trim()?.lowercase() &&
+                        it.ExpiryDate?.trim()?.lowercase() == newLocalRow.ExpiryDate?.trim()?.lowercase()
+                    }
+                    if (existingIndex >= 0) {
+                        updatedList[existingIndex] = newLocalRow
+                    } else {
+                        updatedList.add(0, newLocalRow)
+                    }
+                    _reviewRows.value = updatedList
                     onSuccess()
                 } else {
                     onError(resp.message ?: "Failed.")
                 }
             } catch (e: Exception) {
                 onError(e.localizedMessage ?: "A connection error occurred.")
+            } finally {
+                isCurrentlySubmitting = false
+                _isSubmitting.value = false
             }
         }
     }
@@ -532,6 +701,11 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun editReviewRow(rowIndex: Int, arrayIndex: Int, stock: String, expiry: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
+        if (isCurrentlySubmitting) {
+            return
+        }
+        isCurrentlySubmitting = true
+        _isSubmitting.value = true
         viewModelScope.launch {
             try {
                 val resp = repository.editRow(rowIndex, stock, expiry)
@@ -541,6 +715,9 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
                         val row = currentList[arrayIndex]
                         currentList[arrayIndex] = row.copy(Stock = stock, ExpiryDate = expiry)
                         _reviewRows.value = currentList
+                    } else {
+                        // Fallback: if we didn't have an exact index, refresh all rows
+                        loadThisWeekReview()
                     }
                     onSuccess()
                 } else {
@@ -548,6 +725,9 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (e: Exception) {
                 onError(e.localizedMessage ?: "A connection error occurred.")
+            } finally {
+                isCurrentlySubmitting = false
+                _isSubmitting.value = false
             }
         }
     }
