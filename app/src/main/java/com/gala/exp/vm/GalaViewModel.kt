@@ -191,6 +191,10 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
         _storeName.value = savedName
         _rememberMe.value = savedRemember
 
+        if (savedCode.isNotBlank() && savedPass.isNotBlank()) {
+            repository.setCredentials(savedCode, savedPass)
+        }
+
         // Auto-login if rememberMe is enabled and saved credentials exist
         if (savedCode.isNotBlank()) {
             val cachedStaffsStr = prefs.getString("staffs_$savedCode", "") ?: ""
@@ -210,7 +214,6 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         loadLocalArticles()
-        refreshArticlesFromServer()
         checkAppVersion(isManualCheck = false)
     }
 
@@ -220,10 +223,25 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun refreshArticlesFromServer() {
+    private fun refreshArticlesFromServer(force: Boolean = false) {
         viewModelScope.launch {
-            repository.fetchAndCacheArticles()
-            _articles.value = repository.getCachedArticles()
+            val didUpdate = repository.fetchAndCacheArticles(force = force)
+            if (didUpdate || _articles.value.isEmpty()) {
+                _articles.value = repository.getCachedArticles()
+            }
+        }
+    }
+
+    fun syncArticlesManually(onSuccess: (Int) -> Unit = {}, onError: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                repository.fetchAndCacheArticles(force = true)
+                val updated = repository.getCachedArticles()
+                _articles.value = updated
+                onSuccess(updated.size)
+            } catch (e: Exception) {
+                onError(e.localizedMessage ?: "Failed to sync articles.")
+            }
         }
     }
 
@@ -303,6 +321,8 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
                         .putBoolean("wasLoggedIn", false)
                         .apply()
                 }
+
+                refreshArticlesFromServer()
             } catch (e: Exception) {
                 val msg = e.localizedMessage ?: "Connection error. Please try again."
                 if (e is java.net.UnknownHostException || msg.contains("unable to resolve host", ignoreCase = true)) {
@@ -326,6 +346,7 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
             _storeCode.value = ""
             _password.value = ""
             _storeName.value = ""
+            repository.clearCredentials()
             prefs.edit()
                 .remove("storeCode")
                 .remove("password")
@@ -820,6 +841,13 @@ class GalaViewModel(application: Application) : AndroidViewModel(application) {
                     if (isManualCheck) {
                         _toastEvent.emit("App is up to date! (v${com.gala.exp.BuildConfig.VERSION_NAME})")
                     }
+                }
+
+                // Check and sync articles version using artETag
+                val serverETag = versionInfo.artETagString
+                val didUpdate = repository.fetchAndCacheArticles(serverETag = serverETag)
+                if (didUpdate || _articles.value.isEmpty()) {
+                    _articles.value = repository.getCachedArticles()
                 }
             } catch (e: Exception) {
                 if (isManualCheck) {

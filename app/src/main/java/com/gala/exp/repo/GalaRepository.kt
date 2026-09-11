@@ -4,6 +4,7 @@ import android.content.Context
 import com.gala.exp.api.*
 import com.gala.exp.db.ArticleEntity
 import com.squareup.moshi.Moshi
+import com.squareup.moshi.Types
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,6 +12,7 @@ import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 data class StoreMatched(
@@ -22,22 +24,67 @@ data class StoreMatched(
 
 class GalaRepository(context: Context) {
 
+    private val prefs = context.getSharedPreferences("GalaExpPrefs", Context.MODE_PRIVATE)
+
+    @Volatile
+    private var currentStoreCode: String = prefs.getString("storeCode", "") ?: ""
+
+    @Volatile
+    private var currentPassword: String = prefs.getString("password", "") ?: ""
+
+    fun setCredentials(storeCode: String, password: String) {
+        currentStoreCode = storeCode.trim().uppercase()
+        currentPassword = password.trim()
+    }
+
+    fun clearCredentials() {
+        currentStoreCode = ""
+        currentPassword = ""
+    }
+
     private var inMemoryArticles: List<ArticleEntity> = emptyList()
+    private val articlesFile = File(context.filesDir, "cached_articles.json")
 
     private val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
         .build()
 
+    private val articlesListType = Types.newParameterizedType(List::class.java, ArticleEntity::class.java)
+    private val articlesAdapter = moshi.adapter<List<ArticleEntity>>(articlesListType)
+    private val articlesDtoListType = Types.newParameterizedType(List::class.java, ArticleDto::class.java)
+
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            val original = chain.request()
+            val originalUrl = original.url
+
+            val code = currentStoreCode.trim().uppercase()
+            val pass = currentPassword.trim()
+
+            val action = originalUrl.queryParameter("action")
+            val newUrlBuilder = originalUrl.newBuilder()
+
+            if (action != "version" && action != "status" && action != "storeAuth") {
+                if (code.isNotBlank() && originalUrl.queryParameter("storeCode") == null) {
+                    newUrlBuilder.addQueryParameter("storeCode", code)
+                }
+                if (pass.isNotBlank() && originalUrl.queryParameter("password") == null) {
+                    newUrlBuilder.addQueryParameter("password", pass)
+                }
+            }
+
+            val requestBuilder = original.newBuilder().url(newUrlBuilder.build())
+            chain.proceed(requestBuilder.build())
+        }
         .addInterceptor(HttpLoggingInterceptor().apply {
             level = if (com.gala.exp.BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY else HttpLoggingInterceptor.Level.NONE
         })
         .build()
 
     private val api = Retrofit.Builder()
-        .baseUrl("https://expiry-api.gala-it1.workers.dev/")
+        .baseUrl("https://exp.galamarkets.workers.dev/")
         .addConverterFactory(MoshiConverterFactory.create(moshi))
         .client(okHttpClient)
         .build()
@@ -45,44 +92,115 @@ class GalaRepository(context: Context) {
 
     suspend fun authenticateStore(code: String, pass: String): StoreMatched = withContext(Dispatchers.IO) {
         val uppercaseCode = code.trim().uppercase()
-        val response = api.storeAuth()
-        if (!response.isSuccessful) {
-            throw Exception("Network error: Code ${response.code()}")
+        val trimmedPass = pass.trim()
+
+        // Try POST first
+        var response = try {
+            api.storeAuth(request = StoreAuthRequest(storeCode = uppercaseCode, password = trimmedPass))
+        } catch (e: Exception) {
+            null
         }
 
-        val stores = response.body() ?: throw Exception("Failed to retrieve store directory.")
-        var matchedStore: StoreMatched? = null
-
-        for (item in stores) {
-            matchedStore = parseStoreItem(item, uppercaseCode)
-            if (matchedStore != null) {
-                break
+        // If POST fails with 404 or 405 (older worker version), fallback to GET
+        if (response == null || (!response.isSuccessful && (response.code() == 404 || response.code() == 405))) {
+            try {
+                val getResp = api.storeAuthGet()
+                if (getResp.isSuccessful) {
+                    response = getResp
+                }
+            } catch (e: Exception) {
+                // Ignore fallback error
             }
         }
 
-        if (matchedStore == null) {
-            throw Exception("Store Code '$uppercaseCode' not found.")
+        if (response == null) {
+            throw Exception("Failed to connect to authentication server.")
         }
 
-        if (matchedStore.passwordPass != pass.trim()) {
-            throw Exception("Incorrect password.")
+        val rawText = if (response.isSuccessful) {
+            response.body()?.string()?.trim() ?: ""
+        } else {
+            response.errorBody()?.string()?.trim() ?: ""
         }
 
-        matchedStore
+        if (rawText.isBlank()) {
+            throw Exception("Empty response from server (Code ${response.code()}).")
+        }
+
+        // Case 1: Response is a JSON Object { success: true/false, ... }
+        if (rawText.startsWith("{")) {
+            val parsed = try {
+                moshi.adapter(StoreAuthResponse::class.java).fromJson(rawText)
+            } catch (e: Exception) {
+                null
+            }
+
+            if (parsed == null) {
+                throw Exception("Failed to parse store authentication response.")
+            }
+
+            if (parsed.success != true) {
+                throw Exception(parsed.message ?: "Invalid Store Code or password.")
+            }
+
+            val matchedStoreCode = (parsed.storeCode ?: uppercaseCode).trim().uppercase()
+            val matchedStoreName = (parsed.storeName ?: uppercaseCode).trim()
+            val matchedStaffs = (parsed.staffs ?: "").trim()
+
+            setCredentials(matchedStoreCode, trimmedPass)
+
+            return@withContext StoreMatched(
+                storeCode = matchedStoreCode,
+                storeName = matchedStoreName,
+                passwordPass = trimmedPass,
+                staffs = matchedStaffs
+            )
+        }
+
+        // Case 2: Response is a JSON Array [ { storeCode: ... }, ... ]
+        if (rawText.startsWith("[")) {
+            val listType = Types.newParameterizedType(List::class.java, Any::class.java)
+            val listAdapter = moshi.adapter<List<Any>>(listType)
+            val storesList = try {
+                listAdapter.fromJson(rawText) ?: emptyList()
+            } catch (e: Exception) {
+                emptyList()
+            }
+
+            var matchedStore: StoreMatched? = null
+            for (item in storesList) {
+                val match = parseStoreItem(item, uppercaseCode)
+                if (match != null) {
+                    matchedStore = match
+                    break
+                }
+            }
+
+            if (matchedStore == null) {
+                throw Exception("Store Code '$uppercaseCode' not found.")
+            }
+
+            if (matchedStore.passwordPass != trimmedPass) {
+                throw Exception("Incorrect password.")
+            }
+
+            setCredentials(matchedStore.storeCode, trimmedPass)
+            return@withContext matchedStore
+        }
+
+        throw Exception("Invalid response format from server.")
     }
 
     private fun parseStoreItem(item: Any, targetCode: String): StoreMatched? {
-        // Option A: If parsed as Map (key-value)
         if (item is Map<*, *>) {
-            val code = (item["storeCode"] as? String ?: item["0"] as? String ?: "").trim().uppercase()
+            val code = (item["storeCode"] as? String ?: item["StoreCode"] as? String ?: item["0"] as? String ?: "").trim().uppercase()
             if (code == targetCode) {
-                val name = (item["storeName"] as? String ?: item["1"] as? String ?: "").trim()
-                val password = (item["password"] as? String ?: item["2"] as? String ?: "").trim()
-                val staffs = (item["staffs"] as? String ?: item["3"] as? String ?: "").trim()
+                val name = (item["storeName"] as? String ?: item["StoreName"] as? String ?: item["1"] as? String ?: "").trim()
+                val password = (item["password"] as? String ?: item["Password"] as? String ?: item["2"] as? String ?: "").trim()
+                val staffs = (item["staffs"] as? String ?: item["Staffs"] as? String ?: item["3"] as? String ?: "").trim()
                 return StoreMatched(code, name, password, staffs)
             }
         }
-        // Option B: If parsed as List/Array
         if (item is List<*>) {
             val code = (item.getOrNull(0) as? String ?: "").trim().uppercase()
             if (code == targetCode) {
@@ -95,18 +213,80 @@ class GalaRepository(context: Context) {
         return null
     }
 
-    // Returns locally cached articles, triggers silent background network refresh
+    // Returns locally cached articles from memory or local disk file
     suspend fun getCachedArticles(): List<ArticleEntity> = withContext(Dispatchers.IO) {
-        inMemoryArticles
+        if (inMemoryArticles.isNotEmpty()) {
+            return@withContext inMemoryArticles
+        }
+        if (articlesFile.exists()) {
+            try {
+                val jsonStr = articlesFile.readText()
+                val loaded = articlesAdapter.fromJson(jsonStr) ?: emptyList()
+                if (loaded.isNotEmpty()) {
+                    inMemoryArticles = loaded
+                    return@withContext loaded
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        emptyList()
     }
 
-    suspend fun fetchAndCacheArticles() = withContext(Dispatchers.IO) {
+    // Smart fetch: compares server artETag with local stored artETag
+    // If equal (server == local) and cache exists -> completely skips 12,000 row download
+    // If different (server != local) or cache empty -> downloads, replaces cache, and saves artETag
+    suspend fun fetchAndCacheArticles(serverETag: String? = null, force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+        val localETag = prefs.getString("artETag", "") ?: ""
+        val hasCachedData = inMemoryArticles.isNotEmpty() || (articlesFile.exists() && articlesFile.length() > 50)
+
+        var effectiveServerETag = serverETag
+        if (effectiveServerETag == null && !force && hasCachedData) {
+            try {
+                val versionInfo = checkVersion()
+                effectiveServerETag = versionInfo.artETagString
+            } catch (e: Exception) {
+                // If version check fails, fall back to local cached articles
+            }
+        }
+
+        // Compare server ETag with local ETag
+        if (!force && hasCachedData && !effectiveServerETag.isNullOrBlank() && effectiveServerETag == localETag) {
+            // Already up to date! Zero rows downloaded
+            if (inMemoryArticles.isEmpty()) {
+                getCachedArticles()
+            }
+            return@withContext false
+        }
+
         try {
             val response = api.getArticles()
             if (response.isSuccessful) {
-                val articlesDto = response.body() ?: emptyList()
+                val rawText = response.body()?.string()?.trim() ?: ""
+                if (rawText.isBlank()) return@withContext false
+
+                var articlesDto: List<ArticleDto> = emptyList()
+                var responseETag: String? = null
+
+                if (rawText.startsWith("{")) {
+                    val parsed = try {
+                        moshi.adapter(ArticlesResponse::class.java).fromJson(rawText)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    articlesDto = parsed?.rows ?: emptyList()
+                    responseETag = parsed?.artETag?.toString()?.trim()
+                } else if (rawText.startsWith("[")) {
+                    val listAdapter = moshi.adapter<List<ArticleDto>>(articlesDtoListType)
+                    articlesDto = try {
+                        listAdapter.fromJson(rawText) ?: emptyList()
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
+                }
+
                 if (articlesDto.isNotEmpty()) {
-                    inMemoryArticles = articlesDto.map {
+                    val mapped = articlesDto.map {
                         ArticleEntity(
                             article = (it.article ?: "").trim(),
                             barcode = (it.barcode ?: "").trim(),
@@ -114,19 +294,34 @@ class GalaRepository(context: Context) {
                             department = (it.department ?: "").trim()
                         )
                     }
+                    inMemoryArticles = mapped
+                    try {
+                        val json = articlesAdapter.toJson(mapped)
+                        articlesFile.writeText(json)
+                        val finalETag = responseETag ?: effectiveServerETag ?: localETag
+                        val now = System.currentTimeMillis()
+                        prefs.edit()
+                            .putString("artETag", finalETag)
+                            .putLong("last_articles_sync_time", now)
+                            .apply()
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+                    return@withContext true
                 }
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        false
     }
 
     suspend fun getArticleByCodeLocal(articleCode: String): ArticleEntity? = withContext(Dispatchers.IO) {
-        inMemoryArticles.firstOrNull { it.article.trim() == articleCode.trim() }
+        getCachedArticles().firstOrNull { it.article.trim() == articleCode.trim() }
     }
 
     suspend fun getArticleByBarcodeLocal(barcode: String): ArticleEntity? = withContext(Dispatchers.IO) {
-        inMemoryArticles.firstOrNull { it.barcode.trim() == barcode.trim() }
+        getCachedArticles().firstOrNull { it.barcode.trim() == barcode.trim() }
     }
 
     suspend fun getLastWeekData(storeCode: String, week: String, month: String): List<LastWeekRowDto> = withContext(Dispatchers.IO) {

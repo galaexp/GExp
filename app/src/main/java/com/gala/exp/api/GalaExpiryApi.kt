@@ -1,6 +1,7 @@
 package com.gala.exp.api
 
 import com.squareup.moshi.Json
+import okhttp3.ResponseBody
 import retrofit2.Response
 import retrofit2.http.*
 
@@ -12,13 +13,89 @@ data class ArticleDto(
 )
 
 data class LastWeekRowDto(
-    val Article: String?,
-    val Barcode: String?,
-    val Description: String?,
-    val Department: String?,
-    val Stock: String?,
-    val ExpiryDate: String?
-)
+    @Json(name = "Article")
+    val Article: String? = null,
+    @Json(name = "Barcode")
+    val Barcode: String? = null,
+    @Json(name = "Description")
+    val Description: String? = null,
+    @Json(name = "Department")
+    val Department: String? = null,
+    @Json(name = "Stock")
+    val Stock: String? = null,
+    @Json(name = "ExpiryDate")
+    val ExpiryDate: String? = null,
+    @Json(name = "StaffName")
+    val StaffName: String? = null,
+    @Json(name = "staffName")
+    val rawStaffName: String? = null,
+    @Json(name = "Staff")
+    val Staff: String? = null,
+    @Json(name = "staff")
+    val lowerStaff: String? = null,
+    @Json(name = "Staff_Name")
+    val staffNameSnake: String? = null,
+    @Json(name = "staff_name")
+    val staffNameLowerSnake: String? = null,
+    @Json(name = "Staff Name")
+    val staffNameSpace: String? = null,
+    @Json(name = "STAFF")
+    val staffUpper: String? = null,
+    @Json(name = "STAFF_NAME")
+    val staffNameUpperSnake: String? = null,
+    @Json(name = "StaffMember")
+    val StaffMember: String? = null,
+    @Json(name = "staffMember")
+    val rawStaffMember: String? = null,
+    @Json(name = "Staff_Member")
+    val staffMemberSnake: String? = null,
+    @Json(name = "staff_member")
+    val staffMemberLowerSnake: String? = null,
+    @Json(name = "Staff Member")
+    val staffMemberSpace: String? = null,
+    @Json(name = "User")
+    val User: String? = null,
+    @Json(name = "user")
+    val lowerUser: String? = null,
+    @Json(name = "LoggedBy")
+    val LoggedBy: String? = null,
+    @Json(name = "loggedBy")
+    val lowerLoggedBy: String? = null,
+    @Json(name = "SubmittedBy")
+    val SubmittedBy: String? = null,
+    @Json(name = "submittedBy")
+    val lowerSubmittedBy: String? = null,
+    @Json(name = "CreatedBy")
+    val CreatedBy: String? = null,
+    @Json(name = "createdBy")
+    val lowerCreatedBy: String? = null
+) {
+    val staffDisplayName: String
+        get() = listOfNotNull(
+            StaffName,
+            rawStaffName,
+            Staff,
+            lowerStaff,
+            staffNameSnake,
+            staffNameLowerSnake,
+            staffNameSpace,
+            staffUpper,
+            staffNameUpperSnake,
+            StaffMember,
+            rawStaffMember,
+            staffMemberSnake,
+            staffMemberLowerSnake,
+            staffMemberSpace,
+            User,
+            lowerUser,
+            LoggedBy,
+            lowerLoggedBy,
+            SubmittedBy,
+            lowerSubmittedBy,
+            CreatedBy,
+            lowerCreatedBy
+        ).firstOrNull { it.isNotBlank() && !it.equals("null", ignoreCase = true) }?.trim() ?: ""
+}
 
 data class LastWeekResponse(
     val rows: List<LastWeekRowDto>?
@@ -132,7 +209,16 @@ data class VersionInfoResponse(
     val minRequiredVersionCode: Int? = null,
     val apkUrl: String? = null,
     val releaseNotes: String? = null,
-    val forceUpdate: Boolean? = null
+    val forceUpdate: Boolean? = null,
+    val artETag: Any? = null
+) {
+    val artETagString: String?
+        get() = artETag?.toString()?.trim()
+}
+
+data class ArticlesResponse(
+    val rows: List<ArticleDto>? = null,
+    val artETag: Any? = null
 )
 
 data class SuccessResponse(
@@ -171,17 +257,36 @@ data class UpdateStaffsRequest(
     val staffs: String
 )
 
+data class StoreAuthRequest(
+    val storeCode: String,
+    val password: String
+)
+
+data class StoreAuthResponse(
+    val success: Boolean? = null,
+    val storeCode: String? = null,
+    val storeName: String? = null,
+    val staffs: String? = null,
+    val message: String? = null
+)
+
 interface GalaExpiryApi {
-    @GET("/")
+    @POST("/")
     suspend fun storeAuth(
         @Query("action") action: String = "storeAuth",
+        @Body request: StoreAuthRequest
+    ): Response<ResponseBody>
+
+    @GET("/")
+    suspend fun storeAuthGet(
+        @Query("action") action: String = "storeAuth",
         @Query("_t") timestamp: Long = System.currentTimeMillis()
-    ): Response<List<Any>>
+    ): Response<ResponseBody>
 
     @GET("/")
     suspend fun getArticles(
         @Query("action") action: String = "articles"
-    ): Response<List<ArticleDto>>
+    ): Response<ResponseBody>
 
     @GET("/")
     suspend fun lastWeekData(
